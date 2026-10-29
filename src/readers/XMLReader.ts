@@ -8,11 +8,29 @@ import { namespace as infraNamespace } from "@oozcitak/infra"
 import { namespace_extractQName } from "@oozcitak/dom/lib/algorithm"
 import { XMLBuilder, XMLBuilderOptions } from "../interfaces"
 import { BaseReader } from "./BaseReader"
+import { decodeNumberedEntityRegex } from "../constants"
+
+/**
+ * Matches an internal general entity declaration: `<!ENTITY name "value">`.
+ */
+const entityDeclarationRegex = /^<!ENTITY\s+([^\s%"']+)\s+(?:"([^"]*)"|'([^']*)')\s*>$/
+/**
+ * Matches an entity reference: `&name;`.
+ */
+const entityReferenceRegex = /&([^#\s&;][^\s&;]*);/g
+/**
+ * Entity references may add at most this many characters to a document, or
+ * five times the length of the document if that is more.
+ */
+const entityExpansionLimit = 1000000
 
 /**
  * Parses XML nodes from an XML document string.
  */
 export class XMLReader extends BaseReader<string> {
+
+  private _entities = new Map<string, string | undefined>()
+  private _entityExpansionLeft = 0
 
   /**
    * Parses the given document representation.
@@ -48,6 +66,7 @@ export class XMLReader extends BaseReader<string> {
           break
         case TokenType.DocType:
           const doctype = <DocTypeToken>token
+          this._readInternalEntities(str)
           context = this.docType(context, this.sanitize(doctype.name), this.sanitize(doctype.pubId), this.sanitize(doctype.sysId)) || context
           break
         case TokenType.CDATA:
@@ -143,4 +162,104 @@ export class XMLReader extends BaseReader<string> {
 
     return lastChild
   }
+
+  /**
+   * Decodes serialized text, including references to internal entities
+   * declared in the document type declaration.
+   *
+   * @param text - text value to decode
+   */
+  _decodeText(text: string): string {
+    if (text == null || this._entities.size === 0) return super._decodeText(text)
+
+    return super._decodeText(text.replace(entityReferenceRegex, (match, name) => {
+      const value = this._entities.get(name)
+      if (value === undefined) return match
+      this._entityExpansionLeft -= value.length
+      if (this._entityExpansionLeft < 0) {
+        throw new Error("Entity expansion limit exceeded.")
+      }
+      return value
+    }))
+  }
+
+  /**
+   * Reads the internal general entities declared in the internal subset of the
+   * document type declaration. An entity whose replacement text contains
+   * markup or other references is not expanded.
+   *
+   * @param str - XML document string
+   */
+  private _readInternalEntities(str: string): void {
+    this._entityExpansionLeft = Math.max(entityExpansionLimit, 5 * str.length)
+
+    // find the document type declaration
+    let i = 0
+    while (i < str.length && !str.startsWith("<!DOCTYPE", i)) {
+      if (str.startsWith("<?", i)) {
+        i = skipPast(str, i + 2, "?>")
+      } else if (str.startsWith("<!--", i)) {
+        i = skipPast(str, i + 4, "-->")
+      } else {
+        i++
+      }
+    }
+
+    // skip the name and external ID
+    i = indexOfUnquoted(str, i + 9, "[>")
+    if (str[i] !== "[") return
+
+    // read markup declarations up to the end of the internal subset
+    i++
+    while (i < str.length && str[i] !== "]") {
+      if (str.startsWith("<!--", i)) {
+        i = skipPast(str, i + 4, "-->")
+      } else if (str.startsWith("<?", i)) {
+        i = skipPast(str, i + 2, "?>")
+      } else if (str.startsWith("<!", i)) {
+        const end = indexOfUnquoted(str, i + 2, ">") + 1
+        const match = str.slice(i, end).match(entityDeclarationRegex)
+        i = end
+        // the first declaration of an entity is binding
+        if (match === null || this._entities.has(match[1])) continue
+        // character references are replaced when the entity is declared
+        const literal = match[2] ?? match[3]
+        const value = literal.replace(decodeNumberedEntityRegex, (_match, hexStr, numStr) =>
+          String.fromCodePoint(parseInt(hexStr || numStr, hexStr ? 16 : 10))
+        )
+        this._entities.set(match[1],
+          literal.includes("%") || /[<&]/.test(value) ? undefined : this.sanitize(value))
+      } else {
+        i++
+      }
+    }
+  }
+}
+
+/**
+ * Returns the index after the next occurrence of `end`, or the length of the
+ * string if there is none.
+ *
+ * @param str - string to search
+ * @param i - index to start from
+ * @param end - string to find
+ */
+function skipPast(str: string, i: number, end: string): number {
+  const index = str.indexOf(end, i)
+  return index === -1 ? str.length : index + end.length
+}
+
+/**
+ * Returns the index of the next character that is one of `chars` and not
+ * inside a quoted literal, or the length of the string if there is none.
+ *
+ * @param str - string to search
+ * @param i - index to start from
+ * @param chars - characters to find
+ */
+function indexOfUnquoted(str: string, i: number, chars: string): number {
+  while (i < str.length && !chars.includes(str[i])) {
+    i = (str[i] === "\"" || str[i] === "'") ? skipPast(str, i + 1, str[i]) : i + 1
+  }
+  return i
 }

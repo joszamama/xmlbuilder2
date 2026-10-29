@@ -52,4 +52,34 @@ $$.suite('XMLReader', () => {
     $$.deepEqual(baz.toString(), '<Qbaz/>')
   })
 
+  $$.test('internal entity references', () => {
+    const doc = $$.create('<!DOCTYPE w [<!ENTITY e "v">]><w a="&e;">&e;</w>')
+    $$.deepEqual(doc.root().node.textContent, 'v')
+    $$.deepEqual(doc.end(), '<?xml version="1.0"?><!DOCTYPE w><w a="v">v</w>')
+  })
+
+  $$.test('internal entity declarations', () => {
+    const xml = $$.t`
+    <!DOCTYPE root SYSTEM "root.dtd" [
+      <!-- <!ENTITY a "comment"> -->
+      <?pi <!ENTITY a "pi">?>
+      <!ATTLIST root att CDATA "<!ENTITY a 'attlist'>">
+      <!ENTITY a "&#x41;&#66;">
+      <!ENTITY a "second">
+      <!ENTITY markup "<b/>">
+      <!ENTITY ref "&a;">
+      <!ENTITY % param "x">
+      <!ENTITY ext SYSTEM "ext.xml">
+    ]>
+    <root>&a;|&markup;|&ref;|&ext;</root>
+    `
+    $$.deepEqual($$.create(xml).root().node.textContent, 'AB|&markup;|&ref;|&ext;')
+  })
+
+  $$.test('internal entity expansion limit', () => {
+    const value = 'x'.repeat(100000)
+    const xml = '<!DOCTYPE w [<!ENTITY e "' + value + '">]><w>' + '&e;'.repeat(100) + '</w>'
+    $$.throws(() => $$.create(xml), /Entity expansion limit exceeded/)
+  })
+
 })
