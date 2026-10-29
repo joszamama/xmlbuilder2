@@ -113,7 +113,8 @@ export class XMLReader extends BaseReader<string> {
               attNamespace = infraNamespace.XMLNS
             } else {
               attNamespace = elementNode.node.lookupNamespaceURI(attPrefix)
-              if (attNamespace !== null && elementNode.node.isDefaultNamespace(attNamespace)) {
+              if (attPrefix === null) {
+                // unprefixed attributes are not in the default namespace
                 attNamespace = null
               } else if (attNamespace === null && attPrefix !== null) {
                 attNamespace = nsDeclarations[attPrefix] || null
